@@ -1,0 +1,124 @@
+# The signed session of the KeyBrokerService kbs-operator of the attested e2e spec. It defines the KBS service, so
+# the operator runs the KBS pods with SCONE_CONFIG_ID kbs-operator/kbs. `test/utils/kbs-attested-sessions.sh` replaces
+# 740159c37e751ba24321c7d2f8e3f060f6f707b704ca4c42bde3cbaf5258a754 and 1857edcc29a4f70d2708e91d747a2b10422c65185e83d1be90989e420014d15f with the MRENCLAVEs of the KBS image as the operator starts it and signs the session;
+# the operator uploads it from the policy repository.
+#
+# Every file the KBS reads as input is injected here, so it is visible only inside the attested enclave: the KBS
+# configuration file, the attestation policy, the HTTPS key and certificate, the admin public key, and the token
+# signing key with its certificate chain. CAS generates the keys, a test CA and the certificates that it signs; in
+# production the policy managers put a certificate signed by an external CA into the session. The paths are those of
+# internal/resources/config.go. access_policy is ANY to ease debugging.
+name: kbs-operator
+version: "0.3.11"
+
+access_policy:
+  read:
+  - ANY
+  update:
+  - ANY
+
+services:
+  - name: kbs
+    image_name: kbs_image
+    command: /usr/local/bin/kbs --config-file /etc/kbs-config.toml
+    pwd: /
+    environment:
+      RUST_LOG: debug
+    attestation:
+      mrenclave:
+        - "740159c37e751ba24321c7d2f8e3f060f6f707b704ca4c42bde3cbaf5258a754"
+        - "1857edcc29a4f70d2708e91d747a2b10422c65185e83d1be90989e420014d15f"
+
+secrets:
+  - name: kbs_ca_key
+    kind: private-key
+  - name: kbs_ca
+    kind: x509-ca
+    private_key: kbs_ca_key
+    common_name: "SCONE KBS e2e CA"
+
+  # The token signing key and its certificate.
+  - name: kbs_private_key
+    kind: private-key
+    key_type: P-256
+  - name: kbs_cert
+    kind: x509
+    private_key: kbs_private_key
+    issuer: kbs_ca
+    common_name: "SCONE KBS token signer"
+
+  # The HTTPS key and certificate, for the name of the KBS Service.
+  - name: kbs_tls_key
+    kind: private-key
+  - name: kbs_tls_cert
+    kind: x509
+    private_key: kbs_tls_key
+    issuer: kbs_ca
+    common_name: kbs-operator-kbs.kbs-attested.svc
+    endpoint: server
+    san:
+      - "dns:kbs-operator-kbs.kbs-attested.svc"
+
+images:
+  - name: kbs_image
+    injection_files:
+      - path: /etc/kbs-config.toml
+        # The format of the KBS of the image. The port must be spec.service.port of the KeyBrokerService.
+        content: |
+          [http_server]
+          sockets = ["0.0.0.0:8080"]
+          private_key = "/etc/kbs/tls/tls.key"
+          certificate = "/etc/kbs/tls/tls.crt"
+
+          [admin]
+          auth_public_key = "/etc/kbs/admin/public-key.pem"
+
+          [policy_engine]
+          policy_path = "/opt/confidential-containers/attestation-service/policies/opa/resource-policy.rego"
+
+          [attestation_token]
+          insecure_key = true
+
+          [attestation_service]
+          type = "coco_as_builtin"
+
+          [attestation_service.attestation_token_broker]
+          type = "Ear"
+
+          [attestation_service.attestation_token_broker.signer]
+          key_path = "/opt/confidential-containers/kbs/kbs-ec-key.pem"
+          cert_path = "/opt/confidential-containers/kbs/kbs-cert-chain.pem"
+
+          [[plugins]]
+          name = "resource"
+          type = "LocalFs"
+          dir_path = "/opt/confidential-containers/kbs/repository"
+      - path: /opt/confidential-containers/attestation-service/policies/opa/resource-policy.rego
+        content: |
+          package policy
+
+          default allow = false
+      - path: /etc/kbs/tls/tls.key
+        content: $$SCONE::kbs_tls_key$$
+      - path: /etc/kbs/tls/tls.crt
+        content: $$SCONE::kbs_tls_cert:crt$$
+      # The admin public key, for testing only.
+      - path: /etc/kbs/admin/public-key.pem
+        content: |
+          -----BEGIN PUBLIC KEY-----
+          MCowBQYDK2VwAyEAYCicaAqZsAign7ZQ+SxpOfEBu+yrpXMLHfExOxKnrZ8=
+          -----END PUBLIC KEY-----
+      - path: /opt/confidential-containers/kbs/kbs-ec-key.pem
+        content: $$SCONE::kbs_private_key$$
+      - path: /opt/confidential-containers/kbs/kbs-cert-chain.pem
+        content: "$$SCONE::kbs_cert:crt$$\n$$SCONE::kbs_ca:crt$$"
+      - path: /opt/confidential-containers/kbs/ca-cert.pem
+        content: $$SCONE::kbs_ca:crt$$
+
+security:
+  attestation:
+    # The KBS image is a debug enclave and the test nodes are not patched; their advisories are not known in
+    # advance.
+    tolerate: [debug-mode, hyperthreading, insecure-igpu, outdated-tcb, software-hardening-needed,
+      insecure-configuration, aepic-leak]
+    ignore_advisories: "*"

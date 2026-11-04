@@ -1,0 +1,43 @@
+# A KeyBrokerService for the signed session in policies/kbs-operator.json. Replace the values in <...>.
+#
+# The session fixes these, so keep them as they are:
+# - name kbs-operator and namespace kbs-attested: the HTTPS certificate that CAS generates is for
+#   kbs-operator-kbs.kbs-attested.svc.
+# - image registry.scontain.com/cicd/soup-controllers/kbs:poc.1 with scone.heap 2G (the default): the session
+#   allows only the MRENCLAVEs of that image started that way.
+# - service.port 8080: the port of http_server.sockets in the injected KBS configuration.
+apiVersion: soup.scone.cloud/v1
+kind: KeyBrokerService
+metadata:
+  name: kbs-operator
+  namespace: kbs-attested
+spec:
+  kbs:
+    image: registry.scontain.com/cicd/soup-controllers/kbs:poc.1
+    imagePullSecrets:
+      - name: <pull secret for registry.scontain.com>
+    scone:
+      # The LAS of the node the pod runs on; pin the pod to that node below.
+      lasAddress: <node IP>
+    podTemplate:
+      nodeSelector:
+        kubernetes.io/hostname: <node name>
+  policySource:
+    git:
+      url: https://<git server>/<test repo>.git
+      ref: main
+      path: policies
+      pollInterval: 10s
+      # For a private repository: a Secret with the keys username and password.
+      # authSecretRef:
+      #   name: kbs-operator-git-auth
+  cas:
+    # The CAS that `make cas-and-policies` installs; its attestation address defaults to cas.scone-system:18765.
+    endpoint: https://cas.scone-system:8081
+    clientSecretRef:
+      name: kbs-operator-cas-client   # tls.crt and tls.key of a client certificate
+    caBundleRef:
+      name: kbs-operator-cas-ca       # the output of `scone cas show-certificate`
+      key: ca.crt
+  service:
+    port: 8080
